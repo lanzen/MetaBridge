@@ -166,7 +166,8 @@ rfXval = function(disTable, metadata, depvar, xvalParameter,
 ## 
 
 rfTrainAndVal = function(disTableTrain, disTableVal, mdTrain,  
-                         depvar, numTrees=300, algo="RF", mtry=NA) { 
+                         depvar, numTrees=300, algo="RF", mtry=NA,
+                         filterByRF = FALSE, selectedFeatures=100) { 
   
   # Check that row names in disTableTrain == mdTrain and dimensions are same
   if(dim(disTableTrain)[1] != dim(mdTrain)[1] | sum(row.names(disTableTrain) != row.names(mdTrain))>0){
@@ -174,10 +175,35 @@ rfTrainAndVal = function(disTableTrain, disTableVal, mdTrain,
     return()
   }
   
+  # Check that row names in disTableTrain and distTableVal are same
+  if(dim(disTableTrain)[2] != dim(disTableVal)[2] | sum(names(disTableTrain) != names(disTableVal))>0){
+    write("Training and validation datasets have different names of rows. Breaking.\n",stderr())
+    print(dim(disTableTrain))
+    print(dim(disTableVal))
+    print(sum(names(disTableTrain) != names(disTableVal)))
+    return()
+  }
+  
   # Check that depvar are present and have no NAs
   if((!depvar %in% names(mdTrain)) || sum(is.na(mdTrain[,depvar]))>0){
     write(paste0("The dependent variable ",depvar," is missing or has NAs. Breaking.\n"),stderr())
     return()
+  }
+  
+  dv = mdTrain[,depvar]
+  
+  if(filterByRF){
+    ## FEATURE SELECTION USING RF AND RETRAINING WITH 100 MOST IMPORTANT
+    # Train an RF model with all data as would be used for prediction (not allowing
+    # algo RFProb)
+    rfAll = trainRF(dvTrain=dv, trainingData=disTableTrain, 
+                    mtry=mtry, numTrees = numTrees, 
+                    algo = "RF")
+    #print(rfAll) #DEBUG
+    # Select the 100 taxa with highest variable importance
+    imp = tail(sort(rfAll$variable.importance), selectedFeatures)
+    #print(imp) #DEBUG
+    disTableTrain = disTableTrain[,names(imp)]
   }
   
   if(is.na(mtry)){
@@ -192,7 +218,7 @@ rfTrainAndVal = function(disTableTrain, disTableVal, mdTrain,
   
   
   # Make RF model based on disTableTrain
-  rfModel = trainRF(dvTrain=mdTrain[,depvar], trainingData=disTableTrain, 
+  rfModel = trainRF(dvTrain=dv, trainingData=disTableTrain, 
                       mtry=mtry, numTrees = numTrees, 
                       algo = algo)
   
