@@ -9,7 +9,8 @@ require(irr)
 
 
 ## Helper function for training an RF model
-trainRF = function(dvTrain, trainingData, mtry=NA, numTrees=300, algo="RF"){
+trainRF = function(dvTrain, trainingData, mtry=NA, numTrees=300, algo="RF",
+                   quantReg = FALSE, num.threads = 2, weigh_extremes = FALSE){
   
   
   # Set some RF options according to algo and mtry
@@ -19,6 +20,8 @@ trainRF = function(dvTrain, trainingData, mtry=NA, numTrees=300, algo="RF"){
   if(is.na(mtry)){
     mtry = floor(notus/3)
   }
+  #print(mtry) #DEBUG
+  #print(dim(trainingData))  #DEBUG
   
   if(algo=="RFProb"){
     splitrule = "extratrees"
@@ -29,10 +32,25 @@ trainRF = function(dvTrain, trainingData, mtry=NA, numTrees=300, algo="RF"){
     split.select.weights = NULL
   }
   
+  if(weigh_extremes) {
+    ## Give relatively higher importance to data points in training dataset that
+    ## are further away from the median
+    
+    dvm = median(dvTrain)
+    
+    # Each depvar (e.g. PI) is given the weight of the difference to median + 1
+    w = abs(dvTrain - dvm) +1
+  }
+  else {
+    w = NULL
+  }
+  
   return(ranger(dvTrain ~ ., data=trainingData,
                 mtry=mtry, num.trees = numTrees, 
                 importance= "impurity", write.forest = T,
-                splitrule = splitrule, split.select.weights = split.select.weights))
+                splitrule = splitrule, split.select.weights = split.select.weights,
+                quantreg = quantReg, num.threads = num.threads,
+                case.weights = w))
   #min.node.size=5 in Tristans script seems to not improve and used inconsistently
 }
   
@@ -69,7 +87,8 @@ titanFilter = function(dvTrain, trainingData){
 
 rfXval = function(disTable, metadata, depvar, xvalParameter, 
                   numTrees=300, algo="RF", mtry=NA, filterByTITAN=FALSE,
-                  filterByRF = FALSE, selectedFeatures=100) { 
+                  filterByRF = FALSE, selectedFeatures=100, 
+                  quantReg = FALSE, num.threads = 2, weigh_extremes = FALSE) { 
   
   # Check that row names in disTable == metadata and dimensions are same
   if(dim(disTable)[1] != dim(metadata)[1] | sum(row.names(disTable) != row.names(metadata))>0){
@@ -115,6 +134,11 @@ rfXval = function(disTable, metadata, depvar, xvalParameter,
     # print(paste0("Validation data ",leaveOut," range:"))
     # print(summary(dv[!trainWith]))
     print("")
+    
+    #  Sweetspot from testing so keeping (Tristan)
+    if(is.na(mtry)){
+      mtry = floor(dim(trainingData)[2]/3)
+    }
 
     # Filters training data by TITAN if specified (not recommended) and then val data likewise
     if(filterByTITAN){
@@ -133,22 +157,20 @@ rfXval = function(disTable, metadata, depvar, xvalParameter,
       # algo RFProb)
       rfAll = trainRF(dvTrain=dv[trainWith], trainingData=trainingData, 
                       mtry=mtry, numTrees = numTrees, 
-                      algo = "RF")
-      #print(rfAll) #DEBUG
+                      algo = "RF", weigh_extremes = weigh_extremes)
       # Select the 100 taxa with highest variable importance
       imp = tail(sort(rfAll$variable.importance), selectedFeatures)
       #print(imp) #DEBUG
       trainingData = trainingData[,names(imp)]
+      mtry=NA
     }
+   
     
-    #  why is this the default? It does seem to be a sweetspot from testing so keeping
-    if(is.na(mtry)){
-      mtry = floor(dim(trainingData)[2]/3)
-    }
-    # Train RF model
+    #### Train RF model ####
     rfModel = trainRF(dvTrain=dv[trainWith], trainingData=trainingData, 
                       mtry=mtry, numTrees = numTrees, 
-                      algo = algo)
+                      algo = algo, quantReg = quantReg, num.threads = num.threads, 
+                      weigh_extremes = weigh_extremes)
     
 
     # Use on validiation data
@@ -167,7 +189,7 @@ rfXval = function(disTable, metadata, depvar, xvalParameter,
 
 rfTrainAndVal = function(disTableTrain, disTableVal, mdTrain,  
                          depvar, numTrees=300, algo="RF", mtry=NA,
-                         filterByRF = FALSE, selectedFeatures=100) { 
+                         quantReg = FALSE, num.threads = 2, weigh_extremes = FALSE) { 
   
   # Check that row names in disTableTrain == mdTrain and dimensions are same
   if(dim(disTableTrain)[1] != dim(mdTrain)[1] | sum(row.names(disTableTrain) != row.names(mdTrain))>0){
@@ -175,35 +197,10 @@ rfTrainAndVal = function(disTableTrain, disTableVal, mdTrain,
     return()
   }
   
-  # Check that row names in disTableTrain and distTableVal are same
-  if(dim(disTableTrain)[2] != dim(disTableVal)[2] | sum(names(disTableTrain) != names(disTableVal))>0){
-    write("Training and validation datasets have different names of rows. Breaking.\n",stderr())
-    print(dim(disTableTrain))
-    print(dim(disTableVal))
-    print(sum(names(disTableTrain) != names(disTableVal)))
-    return()
-  }
-  
   # Check that depvar are present and have no NAs
   if((!depvar %in% names(mdTrain)) || sum(is.na(mdTrain[,depvar]))>0){
     write(paste0("The dependent variable ",depvar," is missing or has NAs. Breaking.\n"),stderr())
     return()
-  }
-  
-  dv = mdTrain[,depvar]
-  
-  if(filterByRF){
-    ## FEATURE SELECTION USING RF AND RETRAINING WITH 100 MOST IMPORTANT
-    # Train an RF model with all data as would be used for prediction (not allowing
-    # algo RFProb)
-    rfAll = trainRF(dvTrain=dv, trainingData=disTableTrain, 
-                    mtry=mtry, numTrees = numTrees, 
-                    algo = "RF")
-    #print(rfAll) #DEBUG
-    # Select the 100 taxa with highest variable importance
-    imp = tail(sort(rfAll$variable.importance), selectedFeatures)
-    #print(imp) #DEBUG
-    disTableTrain = disTableTrain[,names(imp)]
   }
   
   if(is.na(mtry)){
@@ -218,9 +215,10 @@ rfTrainAndVal = function(disTableTrain, disTableVal, mdTrain,
   
   
   # Make RF model based on disTableTrain
-  rfModel = trainRF(dvTrain=dv, trainingData=disTableTrain, 
-                      mtry=mtry, numTrees = numTrees, 
-                      algo = algo)
+  rfModel = trainRF(dvTrain=mdTrain[,depvar], trainingData=disTableTrain, 
+                    mtry=mtry, numTrees = numTrees, 
+                    algo = algo, quantReg = quantReg, num.threads = num.threads,
+                    weigh_extremes = weigh_extremes)
   
   # Predict based on disTableVal
   preds = predict(rfModel, disTableVal)$predictions
